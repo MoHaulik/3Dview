@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebXR Enhanced Model Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+
+  <!-- Import map to resolve bare module specifiers -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.150.1/build/three.module.js"
+    }
+  }
+  </script>
+
+  <style>
+    body { 
+      margin: 0; 
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #overlay {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      z-index: 1;
+    }
+    #start-button {
+      padding: 12px 24px;
+      font-size: 18px;
+      background: rgba(72, 118, 255, 0.8);
+      color: white;
+      border: none;
+      border-radius: 30px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    #start-button:hover {
+      background: rgba(72, 118, 255, 1);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+    }
+    #status {
+      margin-top: 15px;
+      font-size: 16px;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      padding: 10px 15px;
+      border-radius: 12px;
+      display: none;
+      backdrop-filter: blur(5px);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .control-panel {
+      margin-top: 15px;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      padding: 10px 15px;
+      border-radius: 12px;
+      backdrop-filter: blur(5px);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .slider-control {
+      width: 100%;
+      margin: 10px 0;
+    }
+    #file-input {
+      display: none;
+    }
+    .file-input-label {
+      display: block;
+      padding: 10px 16px;
+      background: rgba(255, 255, 255, 0.15);
+      color: white;
+      border-radius: 8px;
+      margin: 10px 0;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    .file-input-label:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+    .value-display {
+      display: inline-block;
+      width: 45px;
+      text-align: right;
+    }
+    .toggle-button {
+      display: block;
+      width: 100%;
+      padding: 10px 16px;
+      margin: 10px 0;
+      background: rgba(255, 255, 255, 0.15);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: all 0.3s ease;
+    }
+    .toggle-button:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+    .toggle-button.active {
+      background: rgba(72, 118, 255, 0.5);
+    }
+    .exit-ar {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: rgba(255, 255, 255, 0.25);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      cursor: pointer;
+      backdrop-filter: blur(5px);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      z-index: 1000;
+      display: none;
+    }
+    .xr-active .exit-ar {
+      display: flex;
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <button id="start-button">Start AR Experience</button>
+    <div id="status"></div>
+    
+    <div class="control-panel">
+      <label class="file-input-label" for="file-input">
+        Choose OBJ or GLB Model
+      </label>
+      <input type="file" id="file-input" accept=".obj,.glb">
+      
+      <div>
+        <label for="size-slider">Model Size:</label>
+        <input type="range" id="size-slider" class="slider-control" min="0.001" max="0.05" step="0.001" value="0.01">
+        <span id="size-value" class="value-display">0.01</span>
+      </div>
+      
+      <div>
+        <label for="transparency-slider">Transparency:</label>
+        <input type="range" id="transparency-slider" class="slider-control" min="0.0" max="0.95" step="0.05" value="0.0">
+        <span id="transparency-value" class="value-display">0.0</span>
+      </div>
+      
+      <button id="toggle-spin" class="toggle-button">Enable Spinning</button>
+    </div>
+  </div>
+  
+  <button class="exit-ar" id="exit-ar">×</button>
+  
+  <script type="module">
+    import * as THREE from 'three';
+    import { ARButton } from 'https://unpkg.com/three@0.150.1/examples/jsm/webxr/ARButton.js';
+    import { OBJLoader } from 'https://unpkg.com/three@0.150.1/examples/jsm/loaders/OBJLoader.js';
+    import { MTLLoader } from 'https://unpkg.com/three@0.150.1/examples/jsm/loaders/MTLLoader.js';
+    import { GLTFLoader } from 'https://unpkg.com/three@0.150.1/examples/jsm/loaders/GLTFLoader.js';
+
+    let camera, scene, renderer;
+    let controllers = [];
+    let grabModel = null;
+    let modelScale = 0.01;
+    let modelTransparency = 0.0;
+    let fileURL = null;
+    let fileType = null;
+    let defaultModel = 'enemy.obj';
+    let xrSession = null;
+    let isModelSpinning = false;
+    let interactionMode = 'none';
+    let activeControllers = new Set();
+    let initialControllerPositions = {};
+    let initialDistance = 0;
+    let initialRotation = 0;
+    let initialScale = new THREE.Vector3();
+    
+    init();
+
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.setClearColor(0x000000, 0);
+      renderer.shadowMap.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      const ambientLight = new THREE.AmbientLight(0x404040, 2);
+      scene.add(ambientLight);
+
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+      directionalLight.position.set(1, 1, 1);
+      directionalLight.castShadow = true;
+      scene.add(directionalLight);
+
+      // Size slider functionality
+      const sizeSlider = document.getElementById('size-slider');
+      const sizeValue = document.getElementById('size-value');
+      sizeSlider.value = modelScale;
+      sizeValue.textContent = modelScale.toFixed(3);
+      
+      sizeSlider.addEventListener('input', (event) => {
+        modelScale = parseFloat(event.target.value);
+        sizeValue.textContent = modelScale.toFixed(3);
+        if (grabModel) {
+          grabModel.scale.set(modelScale, modelScale, modelScale);
+        }
+      });
+
+      // Transparency slider functionality
+      const transparencySlider = document.getElementById('transparency-slider');
+      const transparencyValue = document.getElementById('transparency-value');
+      transparencySlider.value = modelTransparency;
+      transparencyValue.textContent = modelTransparency.toFixed(2);
+      
+      transparencySlider.addEventListener('input', (event) => {
+        modelTransparency = parseFloat(event.target.value);
+        transparencyValue.textContent = modelTransparency.toFixed(2);
+        if (grabModel) {
+          updateModelTransparency(grabModel, modelTransparency);
+        }
+      });
+
+      // Toggle spin button
+      const toggleSpinButton = document.getElementById('toggle-spin');
+      toggleSpinButton.addEventListener('click', () => {
+        isModelSpinning = !isModelSpinning;
+        toggleSpinButton.textContent = isModelSpinning ? 'Disable Spinning' : 'Enable Spinning';
+        toggleSpinButton.classList.toggle('active', isModelSpinning);
+      });
+
+      // File input functionality
+      const fileInput = document.getElementById('file-input');
+      fileInput.addEventListener('change', handleFileSelect);
+
+      // Start AR button
+      document.getElementById('start-button').addEventListener('click', startARSession);
+
+      // Exit AR button
+      document.getElementById('exit-ar').addEventListener('click', endARSession);
+
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function handleFileSelect(event) {
+      if (event.target.files.length > 0) {
+        const file = event.target.files[0];
+        if (fileURL) {
+          URL.revokeObjectURL(fileURL);
+        }
+        
+        fileURL = URL.createObjectURL(file);
+        fileType = file.name.toLowerCase().split('.').pop();
+        
+        updateStatus(`Selected file: ${file.name}`);
+        
+        if (grabModel) {
+          scene.remove(grabModel);
+          grabModel = null;
+        }
+        
+        if (renderer.xr.isPresenting) {
+          loadCustomModel();
+        }
+      }
+    }
+
+    function updateStatus(message) {
+      const statusElement = document.getElementById('status');
+      statusElement.style.display = 'block';
+      statusElement.textContent = message;
+      
+      // Auto-hide after 5 seconds for non-error messages
+      if (!message.includes('error') && !message.includes('not supported')) {
+        setTimeout(() => {
+          statusElement.style.display = 'none';
+        }, 5000);
+      }
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function startARSession() {
+      if (!navigator.xr) {
+        updateStatus('WebXR is not supported in this browser.');
+        return;
+      }
+      
+      navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+        if (supported) {
+          const sessionInit = { 
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['dom-overlay', 'hand-tracking'], 
+            domOverlay: { root: document.body } 
+          };
+          
+          navigator.xr.requestSession('immersive-ar', sessionInit).then(onSessionStarted);
+        } else {
+          updateStatus('WebXR AR session is not supported on this device.');
+        }
+      });
+    }
+
+    function onSessionStarted(session) {
+      xrSession = session;
+      
+      // Hide start button
+      document.getElementById('start-button').style.display = 'none';
+      
+      // Set up XR scene
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.xr.setSession(session);
+      
+      // Add XR active class to body
+      document.body.classList.add('xr-active');
+      
+      // Setup controllers
+      setupControllers(session);
+      
+      // Load the model
+      loadCustomModel();
+
+      // Start animation loop
+      renderer.setAnimationLoop(render);
+      
+      // Handle session end
+      session.addEventListener('end', onSessionEnd);
+      
+      updateStatus('AR mode active. Point controller at model and squeeze to grab.');
+    }
+    
+    function endARSession() {
+      if (xrSession) {
+        xrSession.end();
+      }
+    }
+    
+    function onSessionEnd() {
+      // Remove XR active class from body
+      document.body.classList.remove('xr-active');
+      
+      // Show start button again
+      document.getElementById('start-button').style.display = 'block';
+      
+      // Clear status
+      document.getElementById('status').style.display = 'none';
+      
+      // Reset state
+      grabModel = null;
+      controllers = [];
+      activeControllers.clear();
+      
+      // Stop animation loop
+      renderer.setAnimationLoop(null);
+      xrSession = null;
+      
+      // Reset scene
+      while(scene.children.length > 0) { 
+        const object = scene.children[0];
+        if (object.geometry) object.geometry.dispose();
+        if (object.material) object.material.dispose();
+        scene.remove(object); 
+      }
+      
+      setupLights();
+    }
+    
+    function setupLights() {
+      const ambientLight = new THREE.AmbientLight(0x404040, 2);
+      scene.add(ambientLight);
+      
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+      directionalLight.position.set(1, 1, 1);
+      directionalLight.castShadow = true;
+      scene.add(directionalLight);
+    }
+
+    function loadCustomModel() {
+      if (fileURL && fileType) {
+        if (fileType === 'obj') {
+          loadOBJModel(fileURL);
+        } else if (fileType === 'glb') {
+          loadGLBModel(fileURL);
+        } else {
+          updateStatus('Unsupported file type. Please use OBJ or GLB format.');
+        }
+      } else {
+        // Fallback to default model if no file is selected
+        loadOBJModel(defaultModel);
+      }
+    }
+
+    function loadOBJModel(url) {
+      updateStatus('Loading OBJ model...');
+      
+      // Create a default material
+      const defaultMaterial = new THREE.MeshStandardMaterial({
+        color: 0x888888,
+        roughness: 0.5,
+        metalness: 0.5,
+        transparent: true,
+        opacity: 1.0 - modelTransparency
+      });
+      
+      const objLoader = new OBJLoader();
+      
+      objLoader.load(
+        url,
+        (object) => {
+          processLoadedModel(object);
+        },
+        (xhr) => {
+          const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
+          updateStatus(`Loading model... ${percent}%`);
+        },
+        (error) => {
+          console.error('An error happened', error);
+          updateStatus('Failed to load model.');
+        }
+      );
+    }
+
+    function loadGLBModel(url) {
+      updateStatus('Loading GLB model...');
+      
+      const gltfLoader = new GLTFLoader();
+      
+      gltfLoader.load(
+        url,
+        (gltf) => {
+          processLoadedModel(gltf.scene);
+        },
+        (xhr) => {
+          const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
+          updateStatus(`Loading model... ${percent}%`);
+        },
+        (error) => {
+          console.error('An error happened', error);
+          updateStatus('Failed to load model.');
+        }
+      );
+    }
+
+    function processLoadedModel(object) {
+      // Remove old model if exists
+      if (grabModel) {
+        scene.remove(grabModel);
+      }
+      
+      grabModel = object;
+      grabModel.userData.isInteractable = true;
+      grabModel.userData.originalPosition = new THREE.Vector3();
+      grabModel.userData.originalRotation = new THREE.Euler();
+      
+      grabModel.traverse((child) => {
+        if (child.isMesh) {
+          // If no material was loaded or we're in GLB format
+          if (!child.material) {
+            child.material = new THREE.MeshStandardMaterial({
+              color: 0x888888,
+              roughness: 0.5,
+              metalness: 0.5
+            });
+          }
+          
+          // Make sure material can handle transparency
+          child.material.transparent = true;
+          child.material.opacity = 1.0 - modelTransparency;
+          
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+      
+      // Apply scale
+      grabModel.scale.set(modelScale, modelScale, modelScale);
+      initialScale.copy(grabModel.scale);
+      
+      // Center the model
+      const box = new THREE.Box3().setFromObject(grabModel);
+      const center = box.getCenter(new THREE.Vector3());
+      grabModel.position.sub(center);
+      
+      // Set initial position
+      grabModel.position.set(0, 0, -0.5);
+      grabModel.userData.originalPosition.copy(grabModel.position);
+      grabModel.userData.originalRotation.copy(grabModel.rotation);
+      
+      scene.add(grabModel);
+      updateStatus('Model loaded! Point controller at it and squeeze to grab.');
+    }
+
+    function updateModelTransparency(model, transparencyValue) {
+      model.traverse((child) => {
+        if (child.isMesh && child.material) {
+          // Ensure material can handle transparency
+          child.material.transparent = true;
+          child.material.opacity = 1.0 - transparencyValue;
+          
+          // For materials with alpha maps, we need to preserve their behavior
+          if (child.material.alphaMap) {
+            child.material.alphaTest = 0.01;
+          }
+        }
+      });
+    }
+    
+    function setupControllers(session) {
+      // Set up controllers
+      for (let i = 0; i < 2; i++) {
+        const controller = renderer.xr.getController(i);
+        controller.userData.id = i;
+        scene.add(controller);
+        
+        // Add events
+        controller.addEventListener('selectstart', onSelectStart);
+        controller.addEventListener('selectend', onSelectEnd);
+        
+        controllers.push(controller);
+      }
+    }
+    
+    function onSelectStart(event) {
+      const controller = event.target;
+      const controllerPos = new THREE.Vector3();
+      controller.getWorldPosition(controllerPos);
+      
+      // Add this controller to active set
+      activeControllers.add(controller.userData.id);
+      
+      if (interactionMode === 'none' && grabModel) {
+        // Check if we're close enough to the model to interact with it
+        const modelPos = new THREE.Vector3();
+        grabModel.getWorldPosition(modelPos);
+        const distance = controllerPos.distanceTo(modelPos);
+        
+        if (distance < 0.5) { // Interaction distance
+          interactionMode = 'move';
+          highlightObject(grabModel, true);
+          
+          // Store initial controller position
+          initialControllerPositions[controller.userData.id] = controllerPos.clone();
+          
+          // Calculate offset from controller to object center
+          grabModel.userData.offset = new THREE.Vector3().subVectors(
+            grabModel.position,
+            controllerPos
+          );
+          
+          updateStatus('Moving model. Use both hands to resize/rotate.');
+        }
+      }
+      else if (interactionMode === 'move' && activeControllers.size === 2) {
+        // Transition to transform mode
+        interactionMode = 'transform';
+        
+        // Store positions of both controllers
+        controllers.forEach(ctrl => {
+          const pos = new THREE.Vector3();
+          ctrl.getWorldPosition(pos);
+          initialControllerPositions[ctrl.userData.id] = pos.clone();
+        });
+        
+        // Calculate initial values for transform operations
+        initialDistance = getControllerDistance();
+        initialScale.copy(grabModel.scale);
+        
+        // Calculate initial angle between controllers
+        const leftPos = initialControllerPositions[0];
+        const rightPos = initialControllerPositions[1];
+        if (leftPos && rightPos) {
+          const vector = new THREE.Vector3().subVectors(rightPos, leftPos);
+          initialRotation = Math.atan2(vector.x, vector.z);
+        }
+        
+        updateStatus('Resize/rotate mode active.');
+      }
+    }
+    
+    function onSelectEnd(event) {
+      const controller = event.target;
+      
+      // Remove controller from active set
+      activeControllers.delete(controller.userData.id);
+      
+      if (interactionMode === 'transform') {
+        if (activeControllers.size === 1) {
+          // Back to move mode with remaining controller
+          interactionMode = 'move';
+          
+          // Update offset for remaining controller
+          const remainingControllerId = Array.from(activeControllers)[0];
+          const remainingController = controllers[remainingControllerId];
+          const controllerPos = new THREE.Vector3();
+          remainingController.getWorldPosition(controllerPos);
+          
+          // Recalculate offset
+          grabModel.userData.offset = new THREE.Vector3().subVectors(
+            grabModel.position,
+            controllerPos
+          );
+          
+          updateStatus('Transform complete. Still moving model.');
+        }
+        else if (activeControllers.size === 0) {
+          resetInteraction();
+        }
+      }
+      else if (interactionMode === 'move' && activeControllers.size === 0) {
+        resetInteraction();
+      }
+    }
+    
+    function resetInteraction() {
+      if (grabModel) {
+        highlightObject(grabModel, false);
+      }
+      
+      interactionMode = 'none';
+      activeControllers.clear();
+      initialControllerPositions = {};
+      updateStatus('Model placed. Select again to move.');
+    }
+    
+    function highlightObject(object, isHighlighted) {
+      if (!object) return;
+      
+      object.traverse((child) => {
+        if (child.isMesh && child.material) {
+          if (isHighlighted) {
+            // Store original values if not already stored
+            if (!child.material._originalEmissive) {
+              child.material._originalEmissive = child.material.emissive ? 
+                child.material.emissive.clone() : new THREE.Color(0x000000);
+            }
+            child.material.emissive = new THREE.Color(0x0088ff);
+            child.material.emissiveIntensity = 0.5;
+          } else if (child.material._originalEmissive) {
+            // Restore original material properties
+            child.material.emissive.copy(child.material._originalEmissive);
+            child.material.emissiveIntensity = 0;
+          }
+        }
+      });
+    }
+    
+    function getControllerDistance() {
+      if (controllers.length < 2) return 0;
+      
+      const leftPos = new THREE.Vector3();
+      const rightPos = new THREE.Vector3();
+      
+      controllers[0].getWorldPosition(leftPos);
+      controllers[1].getWorldPosition(rightPos);
+      
+      return leftPos.distanceTo(rightPos);
+    }
+    
+    function handleObjectInteraction() {
+      if (!grabModel) return;
+      
+      // Handle move with single controller
+      if (interactionMode === 'move' && activeControllers.size === 1) {
+        const controllerId = Array.from(activeControllers)[0];
+        const controller = controllers[controllerId];
+        
+        const controllerPos = new THREE.Vector3();
+        controller.getWorldPosition(controllerPos);
+        
+        // Update position with offset
+        if (grabModel.userData.offset) {
+          grabModel.position.copy(controllerPos).add(grabModel.userData.offset);
+        }
+      }
+      
+      // Handle transform with two controllers
+      else if (interactionMode === 'transform' && activeControllers.size === 2) {
+        // Get current controller positions
+        const currentPositions = [];
+        controllers.forEach(controller => {
+          const pos = new THREE.Vector3();
+          controller.getWorldPosition(pos);
+          currentPositions[controller.userData.id] = pos;
+        });
+        
+        // Calculate current distance for scaling
+        const currentDistance = getControllerDistance();
+        
+        // Scale object based on distance change
+        if (initialDistance > 0) {
+          let scaleFactor = currentDistance / initialDistance;
+          scaleFactor = Math.max(0.5, Math.min(scaleFactor, 3.0)); // Limit scale
+          grabModel.scale.copy(initialScale).multiplyScalar(scaleFactor);
+          
+          // Update the UI slider to reflect the current scale
+          const newScale = modelScale * scaleFactor;
+          document.getElementById('size-slider').value = newScale;
+          document.getElementById('size-value').textContent = newScale.toFixed(3);
+          modelScale = newScale;
+        }
+        
+        // Handle rotation
+        const leftPos = currentPositions[0];
+        const rightPos = currentPositions[1];
+        
+        if (leftPos && rightPos) {
+          const vector = new THREE.Vector3().subVectors(rightPos, leftPos);
+          const currentAngle = Math.atan2(vector.x, vector.z);
+          
+          // Rotation delta from initial angle
+          const rotationDelta = currentAngle - initialRotation;
+          grabModel.rotation.y = grabModel.userData.originalRotation.y + rotationDelta;
+          
+          // Position at midpoint between controllers with slight offset
+          const midpoint = new THREE.Vector3().addVectors(leftPos, rightPos).multiplyScalar(0.5);
+          const forward = new THREE.Vector3(0, 0, -0.05);
+          forward.applyQuaternion(camera.quaternion);
+          midpoint.add(forward);
+          grabModel.position.copy(midpoint);
+        }
+      }
+    }
+    
+    function render(timestamp, frame) {
+      if (grabModel && isModelSpinning && interactionMode === 'none') {
+        grabModel.rotation.y += 0.005;
+      }
+      
+      if (frame) {
+        // Handle object interactions
+        if (grabModel && interactionMode !== 'none') {
+          handleObjectInteraction();
+        }
+      }
+      
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
